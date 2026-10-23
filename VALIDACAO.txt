@@ -1,0 +1,24 @@
+Discordify — validação em Windows x64
+
+Executável final iniciado e usado para converter um vídeo real de teste:
+  Entrada: 26.235.958 bytes, 60 FPS, 480 quadros, com áudio.
+  Saída:   18.713.055 bytes, 60 FPS, 480 quadros, H.264/AAC.
+  Decodificação completa do MP4 de saída: OK.
+
+Testes adicionais do código-fonte:
+  29,97 FPS (30000/1001): 90 quadros preservados.
+  FPS variável: 120 quadros preservados.
+  Tempos dos quadros comparados com tolerância de 1,1 ms entre contêineres.
+  Eventos Qt de arrastar/soltar -> worker -> MP4: OK.
+  Fechar janela mantém ícone de bandeja: OK.
+  MP4 já abaixo de 19 MB não é recodificado: OK.
+  Arquivo inválido e cancelamento durante processamento: OK.
+  Resultados existentes recebem outro nome, sem sobrescrita.
+
+A falha de QtCore da versão intermediária foi reproduzida e corrigida:
+uma ICU incompatível do PATH do ambiente de build estava sendo empacotada.
+O build agora usa somente caminhos do Python e do Windows.
+
+O arrastar físico a partir do Explorer não foi automatizado. Foram usados
+eventos Qt equivalentes; o teste do EXE usou a entrada por argumento,
+que também atende ao arrastar um arquivo sobre o próprio executável.
