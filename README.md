@@ -16,6 +16,7 @@ No settings to figure out. No uploads. No account. Just drag, drop, and send.
 ## Less fiddling. More sharing.
 
 - **Under 19 MB, automatically.** Compression and resolution are adjusted for you, and the file size is checked before saving.
+- **Let your PC choose the fast path.** Discordify measures CPU and compatible GPU encoders, then picks automatically. No switches or presets.
 - **Keep your original FPS.** Your 60 FPS clip stays 60 FPS. Variable frame rates are supported, too.
 - **Keep the whole clip.** No trimming the ending just to fit a size limit.
 - **Keep your original file.** The compressed copy is saved right next to it. Existing files stay untouched.
@@ -26,7 +27,7 @@ Already have an MP4 under 19 MB? Discordify leaves it as it is, avoiding unneces
 
 ## Drag. Drop. Send.
 
-1. **Open Discordify.** No installation required.
+1. **Open Discordify.** No installation required. The interface is in English and keeps only the essentials.
 2. **Drop in your video.** Or click the drop area to choose a file.
 3. **Share the result.** Find your `_discordify.mp4` beside the original, or click the notification to open its folder.
 
@@ -55,14 +56,27 @@ python -m venv .venv
 .venv\Scripts\python tests\test_compression.py
 ```
 
+### Automatic encoder selection
+
+Discordify tests compatible H.264 encoders (NVIDIA NVENC, Intel Quick Sync, AMD AMF, and the CPU) using a short sample of your video.
+Two sample lengths help estimate startup cost and sustained encoding time. A sample SSIM check rejects candidates more than 0.02 below the CPU reference.
+This is a practical estimate, not a guarantee that one encoder is fastest or best for every scene.
+
+Choices are cached locally for similar resolution, frame rate, bitrate, and duration profiles, for up to seven days.
+Hardware/driver changes invalidate the profile. The first conversion in a new profile includes a brief calibration; later conversions reuse the result.
+If the selected GPU fails during conversion, Discordify retries on the CPU and removes that cached decision.
+The app uses one-pass encoding and verifies the actual output size, reducing the bitrate and retrying when needed.
+
 The executable is written to `dist/Discordify.exe`. The build bundles FFmpeg and generates the application icon.
 After building, run `python src/discordify.py` to work on the interface.
 The **Build Windows** workflow can also build the executable manually through GitHub Actions.
 
 ### Tested with real video conversion
 
-The packaged executable reduced a **26.2 MB clip to 18.7 MB**, preserving **60 FPS, all 480 frames, and audio**.
-Additional tests cover 29.97 FPS, variable frame rates, cancellation, and invalid input.
+CPU and NVIDIA NVENC conversions both preserved **60 FPS, all 480 frames, and audio**, producing outputs below the size limit.
+The selection chose NVENC for the 720p/60 FPS sample and the CPU for smaller samples on the test PC.
+Additional tests cover 29.97 FPS, variable frame rates on CPU and NVENC, cancellation, invalid input, cache reuse, and simulated GPU failure followed by a real CPU conversion.
+Intel Quick Sync and AMD AMF could not be validated on physical hardware in this environment.
 Frame timings are preserved within container precision. See [VALIDACAO.txt](VALIDACAO.txt) for the test record.
 
 </details>

@@ -6,7 +6,9 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
+from encoding import CPU, choose, options, forget
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPointF
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPainterPath, QPen, QPolygonF
@@ -22,18 +24,25 @@ class Cancelled(Exception):
     pass
 
 
-def run(args, cancel, progress=None, duration=1):
+def run(args, cancel, progress=None, duration=1, timeout=None):
     if cancel.is_set():
         raise Cancelled()
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen([FFMPEG, '-hide_banner', '-nostdin', *args],
                                    stdout=subprocess.PIPE, stderr=errors,
                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        timed_out = threading.Event()
+        started = time.monotonic()
         def watch():
             while process.poll() is None:
-                if cancel.wait(.15):
+                if cancel.wait(.05) or (timeout and time.monotonic() - started > timeout):
+                    if not cancel.is_set():
+                        timed_out.set()
                     if process.poll() is None:
-                        process.terminate()
+                        try:
+                            process.kill()
+                        except OSError:
+                            pass
                     return
         monitor = threading.Thread(target=watch, daemon=True)
         monitor.start()
@@ -51,47 +60,61 @@ def run(args, cancel, progress=None, duration=1):
         detail = errors.read().decode('utf-8', 'replace')
         if cancel.is_set():
             raise Cancelled()
+        if timed_out.is_set():
+            raise RuntimeError('Encoder test timed out.')
         if process.returncode:
-            raise RuntimeError(detail[-1800:] or 'O FFmpeg não conseguiu processar o vídeo.')
+            raise RuntimeError(detail[-1800:] or 'FFmpeg could not process this video.')
         return detail
 
 
-def inspect(path, cancel):
+def inspect(path, cancel, details=False):
     # Decode no frames: ask the demuxer for its native duration and stream list.
     info = run(['-i', str(path), '-map', '0:v:0', '-t', '0', '-f', 'null', '-'], cancel)
     match = re.search(r'Duration: (\d+):(\d+):(\d+(?:\.\d+)?)', info)
     if not match:
-        raise RuntimeError('Não foi possível determinar a duração deste vídeo.')
+        raise RuntimeError('Could not determine the video duration.')
     h, m, s = map(float, match.groups())
     duration = h * 3600 + m * 60 + s
     if duration <= 0 or not math.isfinite(duration):
-        raise RuntimeError('O vídeo tem duração inválida.')
-    return duration, bool(re.search(r'Stream #.*Audio:', info))
+        raise RuntimeError('Invalid video duration.')
+    result = (duration, bool(re.search(r'Stream #.*Audio:', info)))
+    return (*result, info) if details else result
 
 
-def compress(source, cancel, progress):
+def compress(source, cancel, progress, selector=choose, encode=run):
     source = Path(source)
-    duration, has_audio = inspect(source, cancel)
+    duration, has_audio, info = inspect(source, cancel, details=True)
     if source.suffix.lower() == '.mp4' and source.stat().st_size <= LIMIT:
         return source
     audio = min(96000, max(16000, int(LIMIT * 8 / duration * .12))) if has_audio else 0
     bitrate = min(25_000_000, int(LIMIT * .94 * 8 / duration) - audio)
     if bitrate < 12000:
-        raise RuntimeError('Vídeo longo demais para caber em 19 MB com qualidade utilizável.')
+        raise RuntimeError('This video is too long to fit with usable quality.')
     with tempfile.TemporaryDirectory(prefix='discordify-') as folder:
         temp = Path(folder) / 'video.mp4'
-        for attempt in range(4):
+        height = 1080 if bitrate >= 2200000 else 720 if bitrate >= 900000 else 480 if bitrate >= 350000 else 360 if bitrate >= 150000 else 240
+        filters = f'scale=w=trunc(iw*min(1\\,{height}/ih)/2)*2:h=trunc(ih*min(1\\,{height}/ih)/2)*2'
+        try:
+            encoder, key = selector(source, duration, bitrate, filters, info, FFMPEG, run, cancel, progress)
+        except RuntimeError:
+            encoder, key = CPU, None
+        for attempt in range(5):
             height = 1080 if bitrate >= 2200000 else 720 if bitrate >= 900000 else 480 if bitrate >= 350000 else 360 if bitrate >= 150000 else 240
             filters = f'scale=w=trunc(iw*min(1\\,{height}/ih)/2)*2:h=trunc(ih*min(1\\,{height}/ih)/2)*2'
             common = ['-y', '-i', str(source), '-map', '0:v:0', '-vf', filters,
-                      '-c:v', 'libx264', '-preset', 'fast', '-b:v', str(bitrate),
-                      '-pix_fmt', 'yuv420p', '-fps_mode', 'passthrough', '-passlogfile', str(Path(folder) / 'pass')]
-            progress(0, f'Analisando compressão · tentativa {attempt + 1}')
-            run([*common, '-pass', '1', '-an', '-progress', 'pipe:1', '-f', 'null', os.devnull],
-                cancel, lambda p: progress(int(p * 45), 'Analisando vídeo…'), duration)
+                      *options(encoder, bitrate)]
+            progress(0, 'Compressing…')
             audio_args = ['-map', '0:a:0?', '-c:a', 'aac', '-b:a', str(audio), '-ac', '2'] if has_audio else ['-an']
-            run([*common, '-pass', '2', *audio_args, '-movflags', '+faststart', '-progress', 'pipe:1', str(temp)],
-                cancel, lambda p: progress(45 + int(p * 54), 'Comprimindo vídeo…'), duration)
+            try:
+                encode([*common, *audio_args, '-movflags', '+faststart', '-progress', 'pipe:1', str(temp)],
+                    cancel, lambda p: progress(int(p * 99), 'Compressing…'), duration)
+            except RuntimeError:
+                if encoder == CPU:
+                    raise
+                encoder = CPU
+                if key:
+                    forget(key)
+                continue
             size = temp.stat().st_size
             if 0 < size <= LIMIT:
                 # Exclusive creation prevents overwriting an existing file, including a concurrent output.
@@ -109,11 +132,11 @@ def compress(source, cancel, progress):
                         destination.unlink(missing_ok=True)
                         raise
                     return destination
-                raise RuntimeError('Não foi possível escolher um nome para o arquivo de saída.')
+                raise RuntimeError('Could not choose an output filename.')
             bitrate = int(bitrate * LIMIT / size * .90)
             if bitrate < 12000:
                 break
-        raise RuntimeError('Não foi possível atingir 19 MB. Nenhum arquivo incompleto foi salvo.')
+        raise RuntimeError('Could not meet the size limit. No incomplete file was saved.')
 
 
 class Worker(QThread):
@@ -131,7 +154,7 @@ class Worker(QThread):
             result = compress(self.path, self.cancel, self.update.emit)
             self.done.emit(str(result))
         except Cancelled:
-            self.failed.emit('Compressão cancelada.')
+            self.failed.emit('Compression cancelled.')
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -187,19 +210,15 @@ class DropArea(QWidget):
         painter.drawPolygon(QPolygonF([QPointF(26, 32), QPointF(26, 52), QPointF(43, 42)]))
         painter.end()
         picture = QLabel()
-        picture.setPixmap(pix)
+        picture.setPixmap(pix.scaled(40, 45, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(picture)
-        self.title = QLabel('Arraste seu vídeo aqui')
+        self.title = QLabel('Drop a video')
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.title.setStyleSheet('font-size:19px;font-weight:600;color:#efeff5;')
+        self.title.setStyleSheet('font-size:16px;font-weight:600;color:#efeff5;')
         layout.addWidget(self.title)
-        subtitle = QLabel('Até 19 MB · FPS original')
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet('font-size:12px;color:#92929f;')
-        layout.addWidget(subtitle)
         layout.addStretch()
-        for child in [picture, self.title, subtitle]:
+        for child in [picture, self.title]:
             child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def setText(self, text):
@@ -220,17 +239,17 @@ class Window(QWidget):
         self.setWindowTitle('Discordify')
         self.setWindowIcon(icon())
         self.setAcceptDrops(True)
-        self.setFixedSize(520, 380)
+        self.setFixedSize(400, 280)
         self.setStyleSheet('QWidget {background:#1c1d22;color:#e7e7ec;font:13px "Segoe UI";} QWidget#dropArea {background:#22232b;border:1px dashed #8274ef;border-radius:14px;} QWidget#dropArea:hover {background:#262631;border-color:#aaa0ff;} QLabel {background:transparent;border:0;} QProgressBar {border:0;background:#34353e;border-radius:3px;} QProgressBar::chunk {background:#8274fa;border-radius:3px;} QMenu {background:#202024;} QMenu::item {padding:8px 18px;} QMenu::item:selected {background:#393442;}')
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 22)
-        layout.setSpacing(18)
+        layout.setSpacing(12)
         header = QHBoxLayout()
         logo = QLabel()
-        logo.setPixmap(self.windowIcon().pixmap(30, 30))
+        logo.setPixmap(self.windowIcon().pixmap(24, 24))
         header.addWidget(logo)
         title = QLabel('Discordify')
-        title.setStyleSheet('font-size:19px;font-weight:600;color:#f3f3f6;')
+        title.setStyleSheet('font-size:16px;font-weight:600;color:#f3f3f6;')
         header.addWidget(title)
         header.addStretch()
         credit = QLabel('by pedromacedo')
@@ -247,17 +266,19 @@ class Window(QWidget):
         self.bar.setTextVisible(False)
         self.bar.setValue(0)
         layout.addWidget(self.bar)
+        self.status.hide()
+        self.bar.hide()
         self.tray = QSystemTrayIcon(self.windowIcon(), self)
-        self.tray.setToolTip('Discordify · vídeos de até 19 MB')
+        self.tray.setToolTip('Discordify')
         menu = QMenu()
-        menu.addAction('Abrir Discordify', self.reveal)
-        menu.addAction('Escolher vídeo…', self.pick)
-        self.folder_action = menu.addAction('Abrir pasta do resultado', self.open_result)
+        menu.addAction('Open Discordify', self.reveal)
+        menu.addAction('Choose video…', self.pick)
+        self.folder_action = menu.addAction('Open output folder', self.open_result)
         self.folder_action.setEnabled(False)
-        self.cancel_action = menu.addAction('Cancelar compressão', self.cancel_work)
+        self.cancel_action = menu.addAction('Cancel compression', self.cancel_work)
         self.cancel_action.setEnabled(False)
         menu.addSeparator()
-        menu.addAction('Sair', self.quit)
+        menu.addAction('Quit', self.quit)
         self.tray.setContextMenu(menu)
         self.menu = menu
         self.tray.activated.connect(lambda reason: self.reveal() if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick) else None)
@@ -273,7 +294,7 @@ class Window(QWidget):
         self.reveal()
         if self.worker:
             return
-        path, _ = QFileDialog.getOpenFileName(self, 'Escolher vídeo', '', 'Vídeos (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.wmv *.mpeg *.mpg *.ts);;Todos os arquivos (*)')
+        path, _ = QFileDialog.getOpenFileName(self, 'Choose video', '', 'Videos (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.wmv *.mpeg *.mpg *.ts);;All files (*)')
         if path:
             self.start(path)
 
@@ -294,8 +315,10 @@ class Window(QWidget):
         self.result = None
         self.folder_action.setEnabled(False)
         self.cancel_action.setEnabled(True)
-        self.label.setText('Preparando…')
+        self.label.setText('Getting ready…')
         self.status.setText('')
+        self.status.show()
+        self.bar.show()
         self.bar.setValue(0)
         self.worker = Worker(path)
         self.worker.update.connect(self.update_progress)
@@ -306,8 +329,8 @@ class Window(QWidget):
 
     def update_progress(self, value, message):
         self.bar.setValue(value)
-        self.label.setText('Comprimindo…')
-        self.status.setText(f'{message}   {value}%')
+        self.label.setText('Getting ready…' if message.startswith('Finding') else 'Compressing…')
+        self.status.setText('' if message.startswith('Finding') else f'{value}%')
 
     def cancel_work(self):
         if self.worker:
@@ -321,19 +344,21 @@ class Window(QWidget):
     def success(self, path):
         self.result = path
         self.bar.setValue(100)
-        size = Path(path).stat().st_size / 1_000_000
-        self.label.setText(f'Pronto. {size:.2f} MB\n\nSolte outro vídeo aqui')
-        self.status.setText('Salvo na pasta do original. Pode soltar o próximo.')
+        self.label.setText('Done. Drop another?')
+        self.status.setText('Saved next to the original.')
         self.label.setToolTip(path)
         self.folder_action.setEnabled(True)
-        self.tray.showMessage('Discordify', 'Vídeo pronto. Clique para abrir a pasta.')
+        self.tray.showMessage('Discordify', 'Your video is ready. Click to open its folder.')
 
     def failure(self, message):
-        self.label.setText('Não foi possível comprimir.\nClique para tentar outro vídeo.')
-        self.status.setText(message.splitlines()[-1][:75])
+        cancelled = message == 'Compression cancelled.'
+        self.label.setText('Cancelled' if cancelled else "Couldn't compress")
+        self.status.setText('Drop another video to try again.')
         self.label.setToolTip(message)
-        self.tray.showMessage('Discordify', message[:220], QSystemTrayIcon.MessageIcon.Warning)
+        if not cancelled:
+            self.tray.showMessage('Discordify', message[:220], QSystemTrayIcon.MessageIcon.Warning)
         self.bar.setValue(0)
+        self.bar.hide()
 
     def finished(self):
         self.worker.deleteLater()
@@ -346,7 +371,7 @@ class Window(QWidget):
         if self.worker:
             self.exiting = True
             self.worker.cancel.set()
-            self.label.setText('Cancelando e encerrando…')
+            self.label.setText('Cancelling…')
         else:
             QApplication.quit()
 

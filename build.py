@@ -1,5 +1,6 @@
 """Build a self-contained Windows executable. Run from a Windows Python environment."""
 import os
+import filecmp
 import shutil
 import subprocess
 import sys
@@ -16,7 +17,10 @@ from discordify import icon
 def main():
     if sys.platform != 'win32':
         raise SystemExit('Build requer Windows x64.')
-    shutil.copyfile(imageio_ffmpeg.get_ffmpeg_exe(), ROOT / 'src' / 'ffmpeg.exe')
+    bundled = Path(imageio_ffmpeg.get_ffmpeg_exe())
+    destination = ROOT / 'src' / 'ffmpeg.exe'
+    if not destination.exists() or not filecmp.cmp(bundled, destination, shallow=False):
+        shutil.copyfile(bundled, destination)
     app = QApplication([])
     icon().pixmap(256, 256).save(str(ROOT / 'assets' / 'discordify.ico'))
     env = os.environ.copy()

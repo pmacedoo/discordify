@@ -17,6 +17,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: python build.py
       - run: python tests/test_compression.py
+      - run: python tests/test_encoding.py
       - uses: actions/upload-artifact@v4
         with:
           name: Discordify-Windows-x64

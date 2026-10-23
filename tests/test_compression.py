@@ -48,6 +48,22 @@ def main():
             assert max(abs(a - b) for a, b in zip(before, after)) < .0011
             assert app.compress(result, threading.Event(), lambda *args: None) == result
             print(f'{rate} FPS / case {index}: {len(after)} frames, {result.stat().st_size} bytes — OK')
+            if index == 0:
+                calls = []
+                def device_loss(args, *rest, **kwargs):
+                    encoder = args[args.index('-c:v') + 1]
+                    calls.append(encoder)
+                    if encoder == 'h264_nvenc':
+                        Path(args[-1]).write_bytes(b'partial GPU output')
+                        raise RuntimeError('Simulated device loss')
+                    return app.run(args, *rest, **kwargs)
+                fallback = app.compress(source, threading.Event(), lambda *args: None,
+                    selector=lambda *args: ('h264_nvenc', None), encode=device_loss)
+                assert calls == ['h264_nvenc', 'libx264']
+                assert len(timestamps(fallback)) == count
+                assert fallback.stat().st_size <= app.LIMIT
+                assert source.read_bytes() == original
+                print('Simulated GPU failure -> real CPU conversion — OK')
         cancel = threading.Event()
         cancel.set()
         try:

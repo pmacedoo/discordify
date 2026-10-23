@@ -1,24 +1,42 @@
-Discordify — validação em Windows x64
+Discordify 1.1.0 — Windows x64 validation
 
-Executável final iniciado e usado para converter um vídeo real de teste:
-  Entrada: 26.235.958 bytes, 60 FPS, 480 quadros, com áudio.
-  Saída:   18.713.055 bytes, 60 FPS, 480 quadros, H.264/AAC.
-  Decodificação completa do MP4 de saída: OK.
+Actual FFmpeg conversions on the test PC (NVIDIA GeForce RTX 5060):
+  Source: 26,235,958 bytes, 720p, 60 FPS, 480 frames, with audio.
+  CPU one-pass:   16,770,981 bytes; full decode and 480 frames confirmed.
+  NVENC one-pass: 16,927,370 bytes; full decode and 480 frames confirmed.
+  Auto calibration selected NVENC for this profile and CPU for smaller clips.
+  Full conversion plus validation: CPU 3.233s; NVENC 2.292s on this sample.
+  These sample timings are not a universal speedup claim.
 
-Testes adicionais do código-fonte:
-  29,97 FPS (30000/1001): 90 quadros preservados.
-  FPS variável: 120 quadros preservados.
-  Tempos dos quadros comparados com tolerância de 1,1 ms entre contêineres.
-  Eventos Qt de arrastar/soltar -> worker -> MP4: OK.
-  Fechar janela mantém ícone de bandeja: OK.
-  MP4 já abaixo de 19 MB não é recodificado: OK.
-  Arquivo inválido e cancelamento durante processamento: OK.
-  Resultados existentes recebem outro nome, sem sobrescrita.
+Actual additional tests:
+  29.97 FPS: 90 frames preserved on CPU and NVENC.
+  Variable FPS: 120 frames preserved on CPU and NVENC.
+  Frame timestamps compared within 1.1 ms between containers.
+  Existing small MP4 retained without recoding.
+  Active FFmpeg cancellation and invalid input handling passed.
+  Cached encoder choice reused without repeating benchmark calls.
+  Six selection/cache policy unit tests passed.
 
-A falha de QtCore da versão intermediária foi reproduzida e corrigida:
-uma ICU incompatível do PATH do ambiente de build estava sendo empacotada.
-O build agora usa somente caminhos do Python e do Windows.
+Fallback error-path test:
+  GPU device loss was simulated through the explicit process-runner boundary.
+  A partial temporary output was replaced by a real CPU FFmpeg conversion.
+  Completed output preserved all 480 frames; original bytes stayed unchanged.
+  This validates fallback control flow, not physical unplugging of a GPU.
 
-O arrastar físico a partir do Explorer não foi automatizado. Foram usados
-eventos Qt equivalentes; o teste do EXE usou a entrada por argumento,
-que também atende ao arrastar um arquivo sobre o próprio executável.
+Hardware coverage:
+  NVIDIA NVENC and CPU were exercised on actual hardware.
+  Intel QSV and AMD AMF are supported adapters but were not validated on
+  physical Intel/AMD GPU hardware in this environment.
+
+Interface:
+  English text; no size/FPS subtitle or configuration controls.
+  Qt equivalent drag/drop events were used for UI flow verification.
+  Physical Explorer drag/drop was not automated.
+
+Cache:
+  LocalAppData/Discordify/encoders-v2.json; no video uploads.
+  Decisions expire after seven days or hardware/driver/profile changes.
+
+Final 1.1.0 packaged EXE: launched and converted the actual 60 FPS sample.
+Output: 16,927,370 bytes; full decode passed; 480 frames and 60 FPS confirmed.
+Qt drag/drop -> auto encoder -> output and close-to-tray checks passed.
