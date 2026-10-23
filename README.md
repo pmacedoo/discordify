@@ -1,39 +1,52 @@
 # Discordify
 
-**by pedromacedo**
+### Your video. Small enough to send.
 
-Arraste um vídeo. Receba um MP4 de até **19 MB**, com o **FPS original**.
-Sem configurações, sem upload e sem instalação.
+Ever been ready to share a clip, only for Discord to tell you **the file is too large**?
+Now you’re opening a video editor, guessing bitrates, exporting again… all just to send one video.
+
+**Discordify takes care of it. Drop your video in. Get a Discord-ready MP4 out.**
+
+No settings to figure out. No uploads. No account. Just drag, drop, and send.
+
+**[Download for Windows](https://github.com/pmacedoo/discordify/releases/latest)** · Free and open source · **by pedromacedo**
 
 ![Discordify](assets/preview.png)
 
-## Download
+## Less fiddling. More sharing.
 
-Baixe `Discordify.exe` na [última release](https://github.com/pmacedoo/discordify/releases/latest).
-Requer Windows 10/11 de 64 bits. Não precisa instalar Python ou FFmpeg.
+- **Under 19 MB, automatically.** Compression and resolution are adjusted for you, and the file size is checked before saving.
+- **Keep your original FPS.** Your 60 FPS clip stays 60 FPS. Variable frame rates are supported, too.
+- **Keep the whole clip.** No trimming the ending just to fit a size limit.
+- **Keep your original file.** The compressed copy is saved right next to it. Existing files stay untouched.
+- **Keep it on your computer.** Processing is local. Your videos aren’t uploaded anywhere.
+- **Out of the way when you’re done.** Close the window and Discordify stays in your system tray, ready for the next clip.
 
-## Como usar
+Already have an MP4 under 19 MB? Discordify leaves it as it is, avoiding unnecessary quality loss.
 
-1. Abra o executável e arraste um vídeo para a janela. Clicar na área também permite escolher um arquivo.
-2. Aguarde. O resultado fica na pasta do original, com o sufixo `_discordify.mp4`.
-3. Clique na notificação para abrir a pasta do resultado.
+## Drag. Drop. Send.
 
-Fechar a janela mantém o aplicativo na bandeja. Use o botão direito no ícone para cancelar uma conversão ou sair.
-Também é possível arrastar um vídeo sobre o próprio executável.
+1. **Open Discordify.** No installation required.
+2. **Drop in your video.** Or click the drop area to choose a file.
+3. **Share the result.** Find your `_discordify.mp4` beside the original, or click the notification to open its folder.
 
-## Comportamento
+You can also drop a video directly onto `Discordify.exe`. Right-click the tray icon to cancel a conversion or quit.
 
-- Limite de **19.000.000 bytes**, conferido antes de salvar.
-- Preserva os quadros e seus tempos, inclusive em vídeos com FPS variável, com a precisão dos formatos.
-- Ajusta bitrate e resolução automaticamente; usa H.264 e AAC.
-- Preserva o original e não sobrescreve resultados anteriores.
-- MP4 que já está dentro do limite não é recodificado.
-- Processa um vídeo por vez, localmente, sem cortar a duração para caber.
+## Get Discordify
 
-Vídeos muito longos podem não caber com qualidade utilizável. Nesses casos, o aplicativo informa o erro.
-O executável ainda não tem assinatura digital.
+**[Download the latest release →](https://github.com/pmacedoo/discordify/releases/latest)**
 
-## Desenvolvimento
+Choose `Discordify.exe` to get started, or grab the ZIP with documentation and license information included.
+Requires **Windows 10 or 11, 64-bit**. Python and FFmpeg are bundled. The executable is currently unsigned.
+
+The target is **19,000,000 bytes**. Discord’s upload limits depend on your account and context; check the limit shown in your client.
+Very long videos may not fit with usable quality. Discordify reports an error rather than saving an incomplete result.
+One video is processed at a time. Output uses H.264 video and AAC audio.
+
+<details>
+<summary><strong>For developers</strong></summary>
+
+### Build from source
 
 ```powershell
 python -m venv .venv
@@ -42,18 +55,21 @@ python -m venv .venv
 .venv\Scripts\python tests\test_compression.py
 ```
 
-O resultado é `dist/Discordify.exe`. O build inclui o FFmpeg e gera o ícone.
-Após o build, execute `python src/discordify.py` para trabalhar na interface.
-O workflow **Build Windows** também permite gerar o executável manualmente no GitHub Actions.
+The executable is written to `dist/Discordify.exe`. The build bundles FFmpeg and generates the application icon.
+After building, run `python src/discordify.py` to work on the interface.
+The **Build Windows** workflow can also build the executable manually through GitHub Actions.
 
-## Validação
+### Tested with real video conversion
 
-O teste integrado do executável reduziu **26,2 MB para 18,7 MB**, mantendo **60 FPS e 480 quadros**, com áudio.
-Também foram verificados 29,97 FPS, FPS variável, cancelamento e entrada inválida.
-Detalhes em [VALIDACAO.txt](VALIDACAO.txt).
+The packaged executable reduced a **26.2 MB clip to 18.7 MB**, preserving **60 FPS, all 480 frames, and audio**.
+Additional tests cover 29.97 FPS, variable frame rates, cancellation, and invalid input.
+Frame timings are preserved within container precision. See [VALIDACAO.txt](VALIDACAO.txt) for the test record.
 
-## Licença
+</details>
 
-Copyright (c) 2026 pedromacedo. Código sob [GPL-3.0-or-later](LICENSE).
-Dependências e fontes estão descritas em [THIRD_PARTY.md](THIRD_PARTY.md).
-Projeto independente, sem afiliação ao Discord.
+## Made by pedromacedo
+
+Free and open source under [GPL-3.0-or-later](LICENSE). Copyright © 2026 pedromacedo.
+See [THIRD_PARTY.md](THIRD_PARTY.md) for dependencies and their source code.
+
+Discordify is an independent project and is not affiliated with Discord.
