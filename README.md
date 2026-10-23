@@ -7,7 +7,7 @@ Now you’re opening a video editor, guessing bitrates, exporting again… all j
 
 **Discordify takes care of it. Drop your video in. Get a Discord-ready MP4 out.**
 
-No settings to figure out. No uploads. No account. Just drag, drop, and send.
+No settings to figure out. No uploads. No account. Drag in, compress, drag out.
 
 **[Download for Windows](https://github.com/pmacedoo/discordify/releases/latest)** · Free and open source · **by pedromacedo**
 
@@ -29,9 +29,24 @@ Already have an MP4 under 19 MB? Discordify leaves it as it is, avoiding unneces
 
 1. **Open Discordify.** No installation required. The interface is in English and keeps only the essentials.
 2. **Drop in your video.** Or click the drop area to choose a file.
-3. **Share the result.** Find your `_discordify.mp4` beside the original, or click the notification to open its folder.
+3. **Drag it out.** When the window says **“Drag your video out,”** drag from the center straight into Discord, a folder, or another app that accepts file drops.
+
+![Drag the finished video out](assets/drag-preview.png)
+
+The result shows a preview frame from your video, and the same thumbnail follows your cursor while dragging. The drag copies the file, so your saved result stays where it is. To compress the next clip, drop it into the window or click **Choose another video**.
+You can still find your `_discordify.mp4` beside the original, or click the notification to open its folder.
 
 You can also drop a video directly onto `Discordify.exe`. Right-click the tray icon to cancel a conversion or quit.
+
+## Right-click a video to compress it
+
+Right-click the Discordify tray icon and choose **Add to right-click menu** once.
+You can then right-click a supported video in Explorer and select **Compress with Discordify**.
+On Windows 11, it appears under **Show more options**.
+
+This is a per-user integration: no administrator access or default file-association changes.
+It keeps a versioned app copy in `%LOCALAPPDATA%/Discordify/app/` so the menu keeps working if you move the downloaded EXE.
+Use **Remove from right-click menu** in the tray to remove the menu entries. The app copy remains in that folder.
 
 ## Get Discordify
 
@@ -69,6 +84,7 @@ The app uses one-pass encoding and verifies the actual output size, reducing the
 
 The executable is written to `dist/Discordify.exe`. The build bundles FFmpeg and generates the application icon.
 After building, run `python src/discordify.py` to work on the interface.
+Use `python build.py --dist-dir dist/v1.2.0` to build alongside a running older version.
 The **Build Windows** workflow can also build the executable manually through GitHub Actions.
 
 ### Tested with real video conversion

@@ -9,9 +9,10 @@ import threading
 import time
 from pathlib import Path
 from encoding import CPU, choose, options, forget
+import shell_integration
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPointF
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPainterPath, QPen, QPolygonF
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPointF, QMimeData, QUrl, QEvent
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPainterPath, QPen, QPolygonF, QDrag
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
                                QProgressBar, QFileDialog, QSystemTrayIcon, QMenu, QSizePolicy, QHBoxLayout)
 
@@ -141,7 +142,7 @@ def compress(source, cancel, progress, selector=choose, encode=run):
 
 class Worker(QThread):
     update = Signal(int, str)
-    done = Signal(str)
+    done = Signal(str, bytes)
     failed = Signal(str)
 
     def __init__(self, path):
@@ -152,7 +153,19 @@ class Worker(QThread):
     def run(self):
         try:
             result = compress(self.path, self.cancel, self.update.emit)
-            self.done.emit(str(result))
+            preview = b''
+            try:
+                if not self.cancel.is_set():
+                    with tempfile.TemporaryDirectory(prefix='discordify-preview-') as folder:
+                        image = Path(folder) / 'preview.png'
+                        run(['-y', '-i', str(result), '-an', '-vf',
+                             'thumbnail=12,scale=160:90:force_original_aspect_ratio=decrease',
+                             '-frames:v', '1', str(image)], self.cancel, timeout=5)
+                        if image.exists():
+                            preview = image.read_bytes()
+            except (RuntimeError, OSError, Cancelled):
+                pass  # A thumbnail failure must not invalidate a completed video.
+            self.done.emit(str(result), preview)
         except Cancelled:
             self.failed.emit('Compression cancelled.')
         except Exception as exc:
@@ -178,9 +191,14 @@ def icon():
 
 
 class DropArea(QWidget):
+    fileMissing = Signal()
+
     def __init__(self, choose):
         super().__init__()
         self.choose = choose
+        self.output_path = None
+        self.press_position = None
+        self.drag_active = False
         self.setObjectName('dropArea')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -210,7 +228,10 @@ class DropArea(QWidget):
         painter.drawPolygon(QPolygonF([QPointF(26, 32), QPointF(26, 52), QPointF(43, 42)]))
         painter.end()
         picture = QLabel()
-        picture.setPixmap(pix.scaled(40, 45, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.picture = picture
+        self.default_picture = pix.scaled(40, 45, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.preview_pixmap = None
+        picture.setPixmap(self.default_picture)
         picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(picture)
         self.title = QLabel('Drop a video')
@@ -224,10 +245,66 @@ class DropArea(QWidget):
     def setText(self, text):
         self.title.setText(text)
 
+    def set_output(self, path, preview=b''):
+        self.output_path = Path(path).resolve() if path else None
+        self.press_position = None
+        image = QPixmap()
+        self.preview_pixmap = image if path and preview and image.loadFromData(preview) else None
+        self.picture.setPixmap(self.preview_pixmap.scaled(160, 90, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation) if self.preview_pixmap else self.default_picture)
+        self.setCursor(Qt.CursorShape.OpenHandCursor if path else Qt.CursorShape.PointingHandCursor)
+
+    def make_drag(self):
+        if not self.output_path or not self.output_path.is_file():
+            self.fileMissing.emit()
+            return None
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(self.output_path))])
+        drag.setMimeData(mime)
+        image = self.preview_pixmap.scaled(128, 72, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation) if self.preview_pixmap else self.window().windowIcon().pixmap(32, 32)
+        drag.setPixmap(image)
+        drag.setHotSpot(image.rect().center())
+        return drag
+
+    def execute_drag(self, drag):
+        return drag.exec(Qt.DropAction.CopyAction, Qt.DropAction.CopyAction)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.choose()
+            self.press_position = event.position().toPoint()
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self.press_position is not None and self.output_path and not self.drag_active
+                and self.isVisible() and self.isEnabled()
+                and event.buttons() & Qt.MouseButton.LeftButton
+                and (event.position().toPoint() - self.press_position).manhattanLength() >= QApplication.startDragDistance()):
+            self.press_position = None
+            drag = self.make_drag()
+            if drag is not None:
+                self.drag_active = True
+                try:
+                    self.execute_drag(drag)
+                finally:
+                    self.drag_active = False
+                    self.press_position = None
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        start = self.press_position
+        self.press_position = None
+        if (event.button() == Qt.MouseButton.LeftButton and start is not None
+                and not self.output_path and self.rect().contains(event.position().toPoint())
+                and (event.position().toPoint() - start).manhattanLength() < QApplication.startDragDistance()):
+            self.choose()
+        super().mouseReleaseEvent(event)
+
+    def event(self, event):
+        if event.type() in (QEvent.Type.Hide, QEvent.Type.WindowDeactivate, QEvent.Type.UngrabMouse):
+            self.press_position = None
+        return super().event(event)
 
 
 class Window(QWidget):
@@ -257,8 +334,10 @@ class Window(QWidget):
         header.addWidget(credit)
         layout.addLayout(header)
         self.label = DropArea(self.pick)
+        self.label.fileMissing.connect(self.clear_result)
         layout.addWidget(self.label, 1)
         self.status = QLabel('')
+        self.status.linkActivated.connect(lambda _: self.pick())
         self.status.setStyleSheet('font-size:11px;color:#a6a6b2;')
         layout.addWidget(self.status)
         self.bar = QProgressBar()
@@ -278,6 +357,9 @@ class Window(QWidget):
         self.cancel_action = menu.addAction('Cancel compression', self.cancel_work)
         self.cancel_action.setEnabled(False)
         menu.addSeparator()
+        menu.addAction('Add to right-click menu', self.add_context_menu)
+        menu.addAction('Remove from right-click menu', self.remove_context_menu)
+        menu.addSeparator()
         menu.addAction('Quit', self.quit)
         self.tray.setContextMenu(menu)
         self.menu = menu
@@ -290,6 +372,20 @@ class Window(QWidget):
         self.raise_()
         self.activateWindow()
 
+    def add_context_menu(self):
+        try:
+            shell_integration.enable()
+            self.tray.showMessage('Discordify', 'Right-click menu added. On Windows 11, check “Show more options.”')
+        except OSError as exc:
+            self.tray.showMessage('Discordify', str(exc), QSystemTrayIcon.MessageIcon.Warning)
+
+    def remove_context_menu(self):
+        try:
+            shell_integration.remove()
+            self.tray.showMessage('Discordify', 'Right-click menu removed.')
+        except OSError as exc:
+            self.tray.showMessage('Discordify', str(exc), QSystemTrayIcon.MessageIcon.Warning)
+
     def pick(self):
         self.reveal()
         if self.worker:
@@ -299,11 +395,17 @@ class Window(QWidget):
             self.start(path)
 
     def dragEnterEvent(self, event):
+        if event.source() is self.label:
+            event.ignore()
+            return
         urls = event.mimeData().urls()
         if not self.worker and len(urls) == 1 and urls[0].isLocalFile() and Path(urls[0].toLocalFile()).is_file():
             event.acceptProposedAction()
 
     def dropEvent(self, event):
+        if event.source() is self.label:
+            event.ignore()
+            return
         urls = event.mimeData().urls()
         if not self.worker and len(urls) == 1 and urls[0].isLocalFile():
             event.acceptProposedAction()
@@ -313,6 +415,8 @@ class Window(QWidget):
         if self.worker:
             return
         self.result = None
+        self.label.set_output(None)
+        self.label.setToolTip('')
         self.folder_action.setEnabled(False)
         self.cancel_action.setEnabled(True)
         self.label.setText('Getting ready…')
@@ -341,11 +445,22 @@ class Window(QWidget):
         if self.result:
             subprocess.Popen(['explorer.exe', '/select,', self.result])
 
-    def success(self, path):
+    def clear_result(self):
+        self.result = None
+        self.label.set_output(None)
+        self.label.setText('Drop a video')
+        self.label.setToolTip('')
+        self.folder_action.setEnabled(False)
+        self.status.setText('The output file is no longer available.')
+        self.status.show()
+        self.bar.hide()
+
+    def success(self, path, preview=b''):
         self.result = path
+        self.label.set_output(path, preview)
         self.bar.setValue(100)
-        self.label.setText('Done. Drop another?')
-        self.status.setText('Saved next to the original.')
+        self.label.setText('Drag your video out')
+        self.status.setText('<a href="choose" style="color:#a6a6b2;text-decoration:none;">Choose another video</a>')
         self.label.setToolTip(path)
         self.folder_action.setEnabled(True)
         self.tray.showMessage('Discordify', 'Your video is ready. Click to open its folder.')

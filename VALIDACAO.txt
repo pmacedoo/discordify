@@ -40,3 +40,30 @@ Cache:
 Final 1.1.0 packaged EXE: launched and converted the actual 60 FPS sample.
 Output: 16,927,370 bytes; full decode passed; 480 frames and 60 FPS confirmed.
 Qt drag/drop -> auto encoder -> output and close-to-tray checks passed.
+
+1.2.0 drag-out update:
+  Five Qt mouse-event tests passed: click/release, native drag threshold,
+  repeated and cancelled gestures, hide/release cancellation, and deleted files.
+  Verified file handoff uses a real local-file URL, including Unicode names.
+  The native QDrag implementation offers CopyAction only; no source deletion.
+  A recording executor was used for automated drag handoff tests.
+  Native external drops into Discord/Explorer were NOT automated.
+  An attempted native cancellation test was stopped because the Windows OLE
+  drag loop did not process the Qt timer used by that test harness.
+  The source drag/drop -> real conversion -> draggable result flow passed.
+
+1.2.0 preview and Explorer integration:
+  Generated a PNG thumbnail through actual FFmpeg decoding after conversion.
+  Verified the result and outgoing QDrag pixmap contain that frame.
+  Two HKCU tests passed in isolated test registry namespaces: registration,
+  quoted Unicode paths, repeat install, update, removal, and conflict handling.
+  Explorer integration uses only owned, extension-specific static verbs.
+
+Final installed integration verification:
+  Installed the real executable copy and registered all ten video extensions.
+  Verified the command in the user's actual HKU Classes hive.
+  Invoked the registered verb via native ShellExecuteW with a Unicode path
+  containing spaces and an ampersand. Windows resolved the verb (return 42),
+  launched the EXE, and produced a 16,927,370-byte MP4.
+  The final portable EXE separately passed full decode: 480 frames, 60 FPS.
+  The right-click integration remains enabled for the requesting user.

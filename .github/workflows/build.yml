@@ -18,6 +18,8 @@ jobs:
       - run: python build.py
       - run: python tests/test_compression.py
       - run: python tests/test_encoding.py
+      - run: python tests/test_drag.py
+      - run: python tests/test_shell.py
       - uses: actions/upload-artifact@v4
         with:
           name: Discordify-Windows-x64
