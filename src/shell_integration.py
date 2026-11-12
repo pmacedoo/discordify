@@ -10,7 +10,7 @@ import tempfile
 if os.name == 'nt':
     import winreg
 
-VERSION = '1.2.0'
+VERSION = '1.3.0'
 OWNER = 'pedromacedo/discordify'
 CLASSES = r'Software\Classes\SystemFileAssociations'
 EXTENSIONS = ('.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.wmv', '.mpeg', '.mpg', '.ts')
@@ -112,7 +112,7 @@ def installed(root=CLASSES):
                for ext in EXTENSIONS)
 
 
-def install(executable, app_dir=None):
+def install(executable, app_dir=None, root=CLASSES):
     source = Path(executable).resolve(strict=True)
     destination = (Path(app_dir) if app_dir else Path(os.environ['LOCALAPPDATA']) / 'Discordify' / 'app' / VERSION) / 'Discordify.exe'
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +124,7 @@ def install(executable, app_dir=None):
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
-    register(destination)
+    register(destination, root)
     return destination
 
 
@@ -132,3 +132,30 @@ def enable():
     if not getattr(sys, 'frozen', False):
         raise OSError('Build the executable before adding the right-click menu.')
     return install(sys.executable)
+
+
+def registered_executable(root=CLASSES):
+    command = (values(key_path('.mp4', root) + r'\command') or {}).get('', ('',))[0]
+    return Path(command.split('"')[1]) if command.startswith('"') and command.count('"') >= 2 else None
+
+
+def refresh(executable=None, app_root=None, root=CLASSES):
+    """Point an enabled right-click menu at a copy of this version, and delete copies of other
+    versions. Returns the registered executable, or None if the menu is off."""
+    if executable is None:
+        if not getattr(sys, 'frozen', False):
+            return None
+        executable = sys.executable
+    app_root = Path(app_root) if app_root else Path(os.environ['LOCALAPPDATA']) / 'Discordify' / 'app'
+    current = app_root / VERSION / 'Discordify.exe'
+    registered = None
+    if installed(root):
+        if registered_executable(root) != current or not current.exists():
+            install(executable, current.parent, root)
+        registered = current
+    if not app_root.is_dir():
+        return registered
+    for folder in app_root.iterdir():
+        if folder.is_dir() and folder.name != VERSION:
+            shutil.rmtree(folder, ignore_errors=True)  # A copy still running is removed on a later launch.
+    return registered

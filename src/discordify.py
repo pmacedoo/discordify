@@ -10,15 +10,48 @@ import time
 from pathlib import Path
 from encoding import CPU, choose, options, forget
 import shell_integration
+import updater
+import single_instance
+import copies
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPointF, QMimeData, QUrl, QEvent
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPainterPath, QPen, QPolygonF, QDrag
+from PySide6.QtCore import QSettings, Qt, QThread, Signal, QTimer, QPointF, QMimeData, QUrl, QEvent
+from PySide6.QtGui import QDesktopServices, QLinearGradient, QColor, QIcon, QPainter, QPixmap, QPainterPath, QPen, QPolygonF, QDrag
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
-                               QProgressBar, QFileDialog, QSystemTrayIcon, QMenu, QSizePolicy, QHBoxLayout)
+                               QProgressBar, QFileDialog, QSystemTrayIcon, QMenu, QSizePolicy, QHBoxLayout,
+                               QMessageBox, QButtonGroup, QGraphicsDropShadowEffect)
 
-LIMIT = 19_000_000
+# Byte targets with headroom under Discord's 10 MB and 20 MB-class limits.
+LIMITS = {10: 9_500_000, 20: 19_000_000}
+LIMIT = LIMITS[20]
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
 FFMPEG = str(ROOT / 'ffmpeg.exe')
+
+
+STYLE = """
+QWidget { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1d1c26, stop:1 #15151b);
+          color: #e9e9f0; font: 13px "Segoe UI Variable Text", "Segoe UI"; }
+QLabel { background: transparent; border: 0; }
+QWidget#dropArea { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #262536, stop:1 #1e1e29);
+                   border: 1px solid #36344d; border-radius: 18px; }
+QWidget#dropArea:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2d2b42, stop:1 #222131);
+                         border-color: #8c7dff; }
+QWidget#sizeToggle { background: #121218; border: 1px solid #2c2b3a; border-radius: 15px; }
+QPushButton#sizeOption { background: transparent; min-height: 24px; color: #8d8da0; border: 0; border-radius: 12px;
+                         padding: 0; font-size: 11px; font-weight: 600; }
+QPushButton#sizeOption:hover { color: #d9d9e6; }
+QPushButton#sizeOption:checked { color: white; background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                 stop:0 #8f7fff, stop:1 #6450f5); }
+QPushButton#sizeOption:disabled { color: #5c5c6c; }
+QPushButton#sizeOption:checked:disabled { color: #d0cce8; background: #4a4472; }
+QProgressBar { border: 0; background: #2a2a36; border-radius: 2px; }
+QProgressBar::chunk { border-radius: 2px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                      stop:0 #6f5cff, stop:1 #b2a6ff); }
+QMenu { background: #1d1d25; border: 1px solid #2f2e3d; padding: 4px; }
+QMenu::item { padding: 8px 18px; border-radius: 6px; }
+QMenu::item:selected { background: #34314a; }
+QMenu::separator { height: 1px; background: #2f2e3d; margin: 4px 8px; }
+QToolTip { background: #24232f; color: #e9e9f0; border: 1px solid #3a3850; padding: 4px 6px; }
+"""
 
 
 class Cancelled(Exception):
@@ -82,13 +115,13 @@ def inspect(path, cancel, details=False):
     return (*result, info) if details else result
 
 
-def compress(source, cancel, progress, selector=choose, encode=run):
+def compress(source, cancel, progress, selector=choose, encode=run, limit=LIMIT):
     source = Path(source)
     duration, has_audio, info = inspect(source, cancel, details=True)
-    if source.suffix.lower() == '.mp4' and source.stat().st_size <= LIMIT:
+    if source.suffix.lower() == '.mp4' and source.stat().st_size <= limit:
         return source
-    audio = min(96000, max(16000, int(LIMIT * 8 / duration * .12))) if has_audio else 0
-    bitrate = min(25_000_000, int(LIMIT * .94 * 8 / duration) - audio)
+    audio = min(96000, max(16000, int(limit * 8 / duration * .12))) if has_audio else 0
+    bitrate = min(25_000_000, int(limit * .94 * 8 / duration) - audio)
     if bitrate < 12000:
         raise RuntimeError('This video is too long to fit with usable quality.')
     with tempfile.TemporaryDirectory(prefix='discordify-') as folder:
@@ -117,7 +150,7 @@ def compress(source, cancel, progress, selector=choose, encode=run):
                     forget(key)
                 continue
             size = temp.stat().st_size
-            if 0 < size <= LIMIT:
+            if 0 < size <= limit:
                 # Exclusive creation prevents overwriting an existing file, including a concurrent output.
                 for n in range(10000):
                     suffix = '' if n == 0 else f' ({n})'
@@ -134,10 +167,26 @@ def compress(source, cancel, progress, selector=choose, encode=run):
                         raise
                     return destination
                 raise RuntimeError('Could not choose an output filename.')
-            bitrate = int(bitrate * LIMIT / size * .90)
+            bitrate = int(bitrate * limit / size * .90)
             if bitrate < 12000:
                 break
         raise RuntimeError('Could not meet the size limit. No incomplete file was saved.')
+
+
+class Background(QThread):
+    """Runs one function off the UI thread; update errors must never break the app."""
+    ok = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, function, *args):
+        super().__init__()
+        self.function, self.args = function, args
+
+    def run(self):
+        try:
+            self.ok.emit(self.function(*self.args))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class Worker(QThread):
@@ -145,14 +194,15 @@ class Worker(QThread):
     done = Signal(str, bytes)
     failed = Signal(str)
 
-    def __init__(self, path):
+    def __init__(self, path, limit=LIMIT):
         super().__init__()
         self.path = path
+        self.limit = limit
         self.cancel = threading.Event()
 
     def run(self):
         try:
-            result = compress(self.path, self.cancel, self.update.emit)
+            result = compress(self.path, self.cancel, self.update.emit, limit=self.limit)
             preview = b''
             try:
                 if not self.cancel.is_set():
@@ -177,7 +227,10 @@ def icon():
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setBrush(QColor('#7765ff'))
+    gradient = QLinearGradient(0, 0, 64, 64)
+    gradient.setColorAt(0, QColor('#9b8cff'))
+    gradient.setColorAt(1, QColor('#5b48f2'))
+    p.setBrush(gradient)
     p.setPen(Qt.PenStyle.NoPen)
     p.drawRoundedRect(2, 2, 60, 60, 18, 18)
     p.setPen(QColor('white'))
@@ -210,7 +263,7 @@ class DropArea(QWidget):
         pix.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pix)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor('#a49aff'), 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.setPen(QPen(QColor('#b3a9ff'), 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         path = QPainterPath()
         path.moveTo(13, 5)
         path.lineTo(39, 5)
@@ -224,7 +277,7 @@ class DropArea(QWidget):
         painter.drawPath(path)
         painter.drawPolyline(QPolygonF([QPointF(39, 5), QPointF(39, 21), QPointF(55, 21)]))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor('#a49aff'))
+        painter.setBrush(QColor('#b3a9ff'))
         painter.drawPolygon(QPolygonF([QPointF(26, 32), QPointF(26, 52), QPointF(43, 42)]))
         painter.end()
         picture = QLabel()
@@ -236,14 +289,19 @@ class DropArea(QWidget):
         layout.addWidget(picture)
         self.title = QLabel('Drop a video')
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.title.setStyleSheet('font-size:16px;font-weight:600;color:#efeff5;')
+        self.title.setStyleSheet('font-size:17px;font-weight:600;color:#f4f4f8;letter-spacing:.2px;')
         layout.addWidget(self.title)
+        self.hint = QLabel('or click to browse')
+        self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hint.setStyleSheet('font-size:12px;color:#8d8da0;')
+        layout.addWidget(self.hint)
         layout.addStretch()
-        for child in [picture, self.title]:
+        for child in [picture, self.title, self.hint]:
             child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def setText(self, text):
         self.title.setText(text)
+        self.hint.setVisible(text == 'Drop a video')
 
     def set_output(self, path, preview=b''):
         self.output_path = Path(path).resolve() if path else None
@@ -313,27 +371,59 @@ class Window(QWidget):
         self.worker = None
         self.result = None
         self.exiting = False
+        self.update_tasks = set()
+        self.pending_update = None
         self.setWindowTitle('Discordify')
         self.setWindowIcon(icon())
         self.setAcceptDrops(True)
-        self.setFixedSize(400, 280)
-        self.setStyleSheet('QWidget {background:#1c1d22;color:#e7e7ec;font:13px "Segoe UI";} QWidget#dropArea {background:#22232b;border:1px dashed #8274ef;border-radius:14px;} QWidget#dropArea:hover {background:#262631;border-color:#aaa0ff;} QLabel {background:transparent;border:0;} QProgressBar {border:0;background:#34353e;border-radius:3px;} QProgressBar::chunk {background:#8274fa;border-radius:3px;} QMenu {background:#202024;} QMenu::item {padding:8px 18px;} QMenu::item:selected {background:#393442;}')
+        self.setFixedSize(420, 320)
+        self.settings = QSettings('pedromacedo', 'Discordify')
+        self.size_mb = 10 if self.settings.value('size_mb', 20, int) == 10 else 20
+        self.setStyleSheet(STYLE)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 18, 22, 22)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 22)
+        layout.setSpacing(14)
         header = QHBoxLayout()
+        header.setSpacing(10)
         logo = QLabel()
-        logo.setPixmap(self.windowIcon().pixmap(24, 24))
+        logo.setPixmap(self.windowIcon().pixmap(28, 28))
         header.addWidget(logo)
+        names = QVBoxLayout()
+        names.setSpacing(0)
         title = QLabel('Discordify')
-        title.setStyleSheet('font-size:16px;font-weight:600;color:#f3f3f6;')
-        header.addWidget(title)
-        header.addStretch()
+        title.setStyleSheet('font-size:15px;font-weight:700;color:#f6f6fa;')
+        names.addWidget(title)
         credit = QLabel('by pedromacedo')
-        credit.setStyleSheet('font-size:11px;color:#92929f;')
-        header.addWidget(credit)
+        credit.setStyleSheet('font-size:10px;color:#7d7d90;')
+        names.addWidget(credit)
+        header.addLayout(names)
+        header.addStretch()
+        toggle = QWidget()
+        toggle.setObjectName('sizeToggle')
+        toggle.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        toggle.setToolTip('Target file size. 10 MB fits Discord without Nitro.')
+        row = QHBoxLayout(toggle)
+        row.setContentsMargins(3, 3, 3, 3)
+        row.setSpacing(2)
+        self.size_group = QButtonGroup(self)
+        for mb in (10, 20):
+            button = QPushButton(f'{mb} MB')
+            button.setObjectName('sizeOption')
+            button.setCheckable(True)
+            button.setFixedSize(54, 24)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setChecked(mb == self.size_mb)
+            self.size_group.addButton(button, mb)
+            row.addWidget(button)
+        self.size_group.idClicked.connect(self.set_size)
+        header.addWidget(toggle)
         layout.addLayout(header)
         self.label = DropArea(self.pick)
+        glow = QGraphicsDropShadowEffect(self.label)
+        glow.setBlurRadius(36)
+        glow.setOffset(0, 8)
+        glow.setColor(QColor(0, 0, 0, 110))
+        self.label.setGraphicsEffect(glow)
         self.label.fileMissing.connect(self.clear_result)
         layout.addWidget(self.label, 1)
         self.status = QLabel('')
@@ -341,7 +431,7 @@ class Window(QWidget):
         self.status.setStyleSheet('font-size:11px;color:#a6a6b2;')
         layout.addWidget(self.status)
         self.bar = QProgressBar()
-        self.bar.setFixedHeight(6)
+        self.bar.setFixedHeight(5)
         self.bar.setTextVisible(False)
         self.bar.setValue(0)
         layout.addWidget(self.bar)
@@ -366,6 +456,89 @@ class Window(QWidget):
         self.tray.activated.connect(lambda reason: self.reveal() if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick) else None)
         self.tray.messageClicked.connect(self.open_result)
         self.tray.show()
+        if updater.enabled():
+            self.tidy_up()
+            # Only once, at launch.
+            QTimer.singleShot(3_000, self.check_updates)
+
+    def run_background(self, function, *args, ok=None, failed=None):
+        task = Background(function, *args)
+        if ok:
+            task.ok.connect(ok)
+        if failed:
+            task.failed.connect(failed)
+        task.finished.connect(lambda: (self.update_tasks.discard(task), task.deleteLater()))
+        self.update_tasks.add(task)
+        task.start()
+
+    def tidy_up(self):
+        """At launch: turn the right-click menu on by default and delete outdated copies of the app."""
+        updater.cleanup()
+        try:
+            if not self.settings.value('context_menu_removed', False, bool) and not shell_integration.installed():
+                shell_integration.enable()
+            shell_integration.refresh()
+        except OSError:
+            pass  # The right-click menu is optional (or owned by another app); never block startup on it.
+        apps = Path(os.environ['LOCALAPPDATA']) / 'Discordify' / 'app'
+        copies.prune(sys.executable, shell_integration.VERSION,
+                     lambda: self.settings.value('copies', ''), lambda text: self.settings.setValue('copies', text),
+                     keep_under=apps)
+
+    def check_updates(self):
+        self.run_background(updater.latest_release, ok=self.offer_update)
+
+    def offer_update(self, release):
+        if not release:
+            return
+        tag, page = release[0], release[3]
+        box = QMessageBox(self)
+        box.setWindowTitle('Discordify')
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f'Discordify {tag} is available. You have v{updater.VERSION}.')
+        box.setInformativeText(f'Update now? You can review the release first on '
+                               f'<a href="{page}">GitHub</a>.')
+        box.setTextFormat(Qt.TextFormat.RichText)
+        update = box.addButton('Update', QMessageBox.ButtonRole.AcceptRole)
+        github = box.addButton('View on GitHub', QMessageBox.ButtonRole.HelpRole)
+        box.addButton('Not now', QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(update)
+        self.reveal()
+        box.exec()
+        if box.clickedButton() is github:
+            QDesktopServices.openUrl(QUrl(page))
+        elif box.clickedButton() is update:
+            self.tray.showMessage('Discordify', f'Downloading {tag}…')
+            self.run_background(updater.download_next_to_app, release, ok=self.update_ready,
+                                failed=lambda message: self.tray.showMessage(
+                                    'Discordify', f"Couldn't download the update: {message}"[:220],
+                                    QSystemTrayIcon.MessageIcon.Warning))
+
+    def update_ready(self, path):
+        self.pending_update = str(path)
+        if not self.worker:
+            self.apply_update()
+        else:
+            self.tray.showMessage('Discordify', 'The update will install when this compression finishes.')
+
+    def apply_update(self):
+        path, self.pending_update = self.pending_update, None
+        try:
+            updater.install_and_restart(path)
+        except OSError as exc:
+            Path(path).unlink(missing_ok=True)
+            self.tray.showMessage('Discordify', f"Couldn't install the update: {exc}"[:220], QSystemTrayIcon.MessageIcon.Warning)
+            return
+        self.tray.hide()
+        QApplication.quit()
+
+    def set_toggle_enabled(self, enabled):
+        for button in self.size_group.buttons():
+            button.setEnabled(enabled)
+
+    def set_size(self, mb):
+        self.size_mb = mb
+        self.settings.setValue('size_mb', mb)
 
     def reveal(self):
         self.showNormal()
@@ -375,6 +548,7 @@ class Window(QWidget):
     def add_context_menu(self):
         try:
             shell_integration.enable()
+            self.settings.setValue('context_menu_removed', False)
             self.tray.showMessage('Discordify', 'Right-click menu added. On Windows 11, check “Show more options.”')
         except OSError as exc:
             self.tray.showMessage('Discordify', str(exc), QSystemTrayIcon.MessageIcon.Warning)
@@ -382,6 +556,7 @@ class Window(QWidget):
     def remove_context_menu(self):
         try:
             shell_integration.remove()
+            self.settings.setValue('context_menu_removed', True)
             self.tray.showMessage('Discordify', 'Right-click menu removed.')
         except OSError as exc:
             self.tray.showMessage('Discordify', str(exc), QSystemTrayIcon.MessageIcon.Warning)
@@ -411,6 +586,15 @@ class Window(QWidget):
             event.acceptProposedAction()
             self.start(urls[0].toLocalFile())
 
+    def open_from_another_launch(self, path):
+        self.reveal()
+        if not path or not Path(path).is_file():
+            return
+        if self.worker:
+            self.tray.showMessage('Discordify', 'Already compressing a video. Try again when it finishes.')
+            return
+        self.start(path)
+
     def start(self, path):
         if self.worker:
             return
@@ -424,7 +608,8 @@ class Window(QWidget):
         self.status.show()
         self.bar.show()
         self.bar.setValue(0)
-        self.worker = Worker(path)
+        self.set_toggle_enabled(False)
+        self.worker = Worker(path, LIMITS[self.size_mb])
         self.worker.update.connect(self.update_progress)
         self.worker.done.connect(self.success)
         self.worker.failed.connect(self.failure)
@@ -478,9 +663,12 @@ class Window(QWidget):
     def finished(self):
         self.worker.deleteLater()
         self.worker = None
+        self.set_toggle_enabled(True)
         self.cancel_action.setEnabled(False)
         if self.exiting:
             QApplication.quit()
+        elif self.pending_update:
+            self.apply_update()
 
     def quit(self):
         if self.worker:
@@ -503,9 +691,24 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName('Discordify')
-    window = Window()
-    window.show()
     # Windows also passes dropped files as arguments when dropped onto the executable.
-    if len(sys.argv) == 2 and Path(sys.argv[1]).is_file():
-        QTimer.singleShot(0, lambda: window.start(sys.argv[1]))
+    file = sys.argv[1] if len(sys.argv) == 2 and Path(sys.argv[1]).is_file() else None
+    # Only one Discordify at a time. After an update, wait for the old process to finish exiting.
+    lock = single_instance.acquire(wait=20 if updater.RESTARTED in sys.argv else 0)
+    if not lock:
+        message = str(Path(file).resolve()) if file else single_instance.SHOW
+        for _ in range(20):  # The running one may still be starting its listener.
+            if single_instance.forward(message, timeout=500):
+                break
+        sys.exit(0)
+    window = Window()
+    instance = single_instance.Server(parent=window)
+    instance.received.connect(window.open_from_another_launch)
+    if updater.RESTARTED in sys.argv:
+        # Restarted by a background update: stay in the tray like before.
+        window.tray.showMessage('Discordify', f'Updated to v{updater.VERSION}.')
+    else:
+        window.show()
+    if file:
+        QTimer.singleShot(0, lambda: window.start(file))
     sys.exit(app.exec())

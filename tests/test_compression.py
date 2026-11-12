@@ -64,6 +64,11 @@ def main():
                 assert fallback.stat().st_size <= app.LIMIT
                 assert source.read_bytes() == original
                 print('Simulated GPU failure -> real CPU conversion — OK')
+                small = app.compress(source, threading.Event(), lambda *args: None, limit=app.LIMITS[10])
+                assert 0 < small.stat().st_size <= app.LIMITS[10]
+                assert len(timestamps(small)) == count
+                assert app.compress(small, threading.Event(), lambda *args: None, limit=app.LIMITS[10]) == small
+                print(f'10 MB target: {small.stat().st_size} bytes — OK')
         cancel = threading.Event()
         cancel.set()
         try:

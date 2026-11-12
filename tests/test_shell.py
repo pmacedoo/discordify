@@ -62,5 +62,23 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(shell.values(path)[''][0], 'Other app')
 
 
+    def test_refresh_moves_menu_to_current_version_copy(self):
+        apps = Path(self.folder.name) / 'app'
+        old = shell.install(self.exe, apps / '0.0.1', self.root)
+        self.assertEqual(shell.registered_executable(self.root), old)
+        current = shell.refresh(self.exe, apps, self.root)
+        self.assertEqual(current, apps / shell.VERSION / 'Discordify.exe')
+        self.assertEqual(shell.registered_executable(self.root), current)
+        self.assertTrue(current.exists())
+        self.assertFalse((apps / '0.0.1').exists())
+        self.assertEqual(shell.refresh(self.exe, apps, self.root), current)  # Idempotent.
+
+    def test_refresh_does_nothing_when_menu_not_enabled(self):
+        apps = Path(self.folder.name) / 'app'
+        apps.mkdir()
+        self.assertIsNone(shell.refresh(self.exe, apps, self.root))
+        self.assertFalse(shell.installed(self.root))
+
+
 if __name__ == '__main__':
     unittest.main()

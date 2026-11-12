@@ -15,7 +15,7 @@ No settings to figure out. No uploads. No account. Drag in, compress, drag out.
 
 ## Less fiddling. More sharing.
 
-- **Under 19 MB, automatically.** Compression and resolution are adjusted for you, and the file size is checked before saving.
+- **10 MB or 20 MB, your pick.** Flip the toggle at the top. Compression and resolution are adjusted for you, and the file size is checked before saving.
 - **Let your PC choose the fast path.** Discordify measures CPU and compatible GPU encoders, then picks automatically. No switches or presets.
 - **Keep your original FPS.** Your 60 FPS clip stays 60 FPS. Variable frame rates are supported, too.
 - **Keep the whole clip.** No trimming the ending just to fit a size limit.
@@ -23,7 +23,7 @@ No settings to figure out. No uploads. No account. Drag in, compress, drag out.
 - **Keep it on your computer.** Processing is local. Your videos aren’t uploaded anywhere.
 - **Out of the way when you’re done.** Close the window and Discordify stays in your system tray, ready for the next clip.
 
-Already have an MP4 under 19 MB? Discordify leaves it as it is, avoiding unnecessary quality loss.
+Already have an MP4 under the selected size? Discordify leaves it as it is, avoiding unnecessary quality loss.
 
 ## Drag. Drop. Send.
 
@@ -40,13 +40,14 @@ You can also drop a video directly onto `Discordify.exe`. Right-click the tray i
 
 ## Right-click a video to compress it
 
-Right-click the Discordify tray icon and choose **Add to right-click menu** once.
-You can then right-click a supported video in Explorer and select **Compress with Discordify**.
+It’s on by default: after you open Discordify once, right-click a supported video in Explorer and select **Compress with Discordify**.
+If Discordify is already open, the video goes to that window. Only one Discordify runs at a time.
 On Windows 11, it appears under **Show more options**.
 
 This is a per-user integration: no administrator access or default file-association changes.
 It keeps a versioned app copy in `%LOCALAPPDATA%/Discordify/app/` so the menu keeps working if you move the downloaded EXE.
-Use **Remove from right-click menu** in the tray to remove the menu entries. The app copy remains in that folder.
+Use **Remove from right-click menu** in the tray to turn it off; Discordify remembers that choice. **Add to right-click menu** turns it back on.
+When you update or download Discordify again, older copies it knows about are deleted automatically, including old app copies in that folder.
 
 ## Get Discordify
 
@@ -55,7 +56,7 @@ Use **Remove from right-click menu** in the tray to remove the menu entries. The
 Choose `Discordify.exe` to get started, or grab the ZIP with documentation and license information included.
 Requires **Windows 10 or 11, 64-bit**. Python and FFmpeg are bundled. The executable is currently unsigned.
 
-The target is **19,000,000 bytes**. Discord’s upload limits depend on your account and context; check the limit shown in your client.
+The targets are **9,500,000 bytes** (10 MB) and **19,000,000 bytes** (20 MB); your choice is remembered. Discord’s upload limits depend on your account and context; check the limit shown in your client.
 Very long videos may not fit with usable quality. Discordify reports an error rather than saving an incomplete result.
 One video is processed at a time. Output uses H.264 video and AAC audio.
 
